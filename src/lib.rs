@@ -99,3 +99,25 @@ impl<T> SpinLock<T> {
             .store(false, std::sync::atomic::Ordering::Release);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let x = SpinLock::new(Vec::new());
+        thread::scope(|s| {
+            s.spawn(|| x.lock_with_swap().push(1));
+            s.spawn(|| {
+                let mut g = x.lock_with_swap();
+                g.push(2);
+                g.push(2);
+            });
+        });
+        let g = x.lock_with_swap();
+        assert!(g.as_slice() == [1, 2, 2] || g.as_slice() == [2, 2, 1]);
+    }
+}
