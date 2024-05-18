@@ -1,8 +1,41 @@
-// 实现一个我自己的自旋锁SpinLock
+//  实现一个我自己的自旋锁SpinLock
 #![allow(unused)]
 #![allow(dead_code)]
 
-use std::{cell::UnsafeCell, error, sync::atomic::AtomicBool};
+use std::{
+    cell::UnsafeCell,
+    error,
+    ops::{Deref, DerefMut},
+    sync::atomic::AtomicBool,
+};
+
+/// 'a保证了Guard不会比SpinLock生命周期长。
+pub struct Guard<'a, T> {
+    lock: &'a SpinLock<T>,
+}
+
+/// Deref trait 用于重载`不可变解引用`操作。
+impl<T> Deref for Guard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.value.get() }
+    }
+}
+
+/// DerefMut trait 用于重载`可变解引用`操作。
+impl<T> DerefMut for Guard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.lock.value.get() }
+    }
+}
+
+impl<T> Drop for Guard<'_, T> {
+    fn drop(&mut self) {
+        self.lock
+            .locked
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
 
 pub struct SpinLock<T> {
     // Using a boolean value to indicate
@@ -30,7 +63,7 @@ impl<T> SpinLock<T> {
     }
 
     /// locked starts as false，lock() try to change it to true and keep trying.
-    pub fn lock_with_swap(&self) -> &mut T {
+    pub fn lock_with_swap(&self) -> Guard<T> {
         while self.locked.swap(true, std::sync::atomic::Ordering::Acquire) {
             // use hint::spin_lock to tell cpu that we're self-spinning
             // and is wating for a change.
@@ -38,13 +71,13 @@ impl<T> SpinLock<T> {
             // it will NOT leads to syscall that makes our thread fall asleep.
             std::hint::spin_loop();
         }
-        unsafe { &mut *self.value.get() }
+        Guard { lock: self }
     }
 
     /// Besides use `swap`, we can also use `CAS`(compare and exchange) ops
     /// to automatically check whether the boolean value is false.
     /// If it is, then we set it to true. This method is more understanable.
-    pub fn lock_with_cas(&self) {
+    pub fn lock_with_cas(&self) -> Guard<T> {
         while self
             .locked
             .compare_exchange_weak(
@@ -55,6 +88,7 @@ impl<T> SpinLock<T> {
             )
             .is_err()
         {}
+        Guard { lock: self }
     }
 
     /// Safety: The &mut T from lock() must be gone!
