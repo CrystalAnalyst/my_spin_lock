@@ -2,28 +2,35 @@
 #![allow(unused)]
 #![allow(dead_code)]
 
-use std::sync::atomic::AtomicBool;
+use std::{cell::UnsafeCell, error, sync::atomic::AtomicBool};
 
-pub struct SpinLock {
+pub struct SpinLock<T> {
     // Using a boolean value to indicate
     // whether it is being locked.
     //
     // Using Atomic to make sure it can be
     // accessed simultaneously by multiple threads.
     locked: AtomicBool,
+    value: UnsafeCell<T>,
 }
 
-impl SpinLock {
+/// Impl Sync to ensures that our data can be shared between threads.
+/// `Sync` is more strict than `Send`, `Send` meaning can be transfered.
+/// But may not be shared simultaneously by many threads, unlike `RwLock`.
+unsafe impl<T> Sync for SpinLock<T> where T: Send {}
+
+impl<T> SpinLock<T> {
     /// const fn are functions that can be called at compile-time
     /// (by being used as the value of a const, or static),
-    pub const fn new() -> Self {
+    pub const fn new(value: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
         }
     }
 
     /// locked starts as false，lock() try to change it to true and keep trying.
-    pub fn lock_with_swap(&self) {
+    pub fn lock_with_swap(&self) -> &mut T {
         while self.locked.swap(true, std::sync::atomic::Ordering::Acquire) {
             // use hint::spin_lock to tell cpu that we're self-spinning
             // and is wating for a change.
@@ -31,6 +38,7 @@ impl SpinLock {
             // it will NOT leads to syscall that makes our thread fall asleep.
             std::hint::spin_loop();
         }
+        unsafe { &mut *self.value.get() }
     }
 
     /// Besides use `swap`, we can also use `CAS`(compare and exchange) ops
@@ -49,8 +57,10 @@ impl SpinLock {
         {}
     }
 
+    /// Safety: The &mut T from lock() must be gone!
+    /// (And no cheating by keeping reference to fields of that T around!)
     /// unlock method only trans it to false.
-    pub fn unlock(&self) {
+    pub unsafe fn unlock(&self) {
         self.locked
             .store(false, std::sync::atomic::Ordering::Release);
     }
